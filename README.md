@@ -12,5 +12,8 @@ Checks cookies for security-related attributes like HttpOnly, Secure, and SameSi
 - `-v`: No description provided
 - `-o`: No description provided
 
+## Notes
+Attributes are read per cookie from the response Set-Cookie headers: Secure and HttpOnly are reported as present or absent, and SameSite is reported with its value or as absent. Cookie values are never printed or saved. Reports carry the cookie name and its attributes only, with a fixed masked marker in the value slot.
+
 ## License
 Copyright (c) ShadowStrikeHQ

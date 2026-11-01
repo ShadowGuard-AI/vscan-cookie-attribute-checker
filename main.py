@@ -7,6 +7,13 @@ from urllib.parse import urlparse
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Timeout in seconds for the scan request
+REQUEST_TIMEOUT = 10
+
+# Fixed marker shown wherever a report shape has a value slot. Cookie
+# values themselves are never printed or saved.
+MASKED_VALUE = "***"
+
 def setup_argparse():
     """
     Sets up the argument parser for the command line interface.
@@ -27,39 +34,68 @@ def validate_url(url):
     except:
         return False
 
-def check_cookie_attributes(url, cookies):
+def parse_set_cookie_header(header):
+    """
+    Parses one Set-Cookie header value into a cookie record.
+
+    The name and the three attributes (Secure, HttpOnly, SameSite) are
+    read from the header itself, where they actually live. The cookie
+    value is dropped and replaced with the fixed masked marker, so it
+    never reaches a report or a file.
+    """
+    parts = [part.strip() for part in header.split(";")]
+    if not parts or "=" not in parts[0]:
+        return None
+    name = parts[0].split("=", 1)[0].strip()
+    if not name:
+        return None
+    cookie_info = {
+        "name": name,
+        "value": MASKED_VALUE,
+        "Secure": "absent",
+        "HttpOnly": "absent",
+        "SameSite": "absent",
+    }
+    for attribute in parts[1:]:
+        if not attribute:
+            continue
+        if "=" in attribute:
+            attr_name, attr_value = attribute.split("=", 1)
+            if attr_name.strip().lower() == "samesite":
+                cookie_info["SameSite"] = attr_value.strip()
+        else:
+            attr_name = attribute.strip().lower()
+            if attr_name == "secure":
+                cookie_info["Secure"] = "present"
+            elif attr_name == "httponly":
+                cookie_info["HttpOnly"] = "present"
+    return cookie_info
+
+
+def check_cookie_attributes(url, set_cookie_headers):
     """
     Checks cookie attributes (HttpOnly, Secure, SameSite) for a given URL.
 
     Args:
         url (str): The URL where the cookies were obtained.
-        cookies (dict): A dictionary of cookies.
+        set_cookie_headers (list): The raw Set-Cookie header values, one
+            entry per cookie, so separate cookies stay separate.
 
     Returns:
         list: A list of dictionaries, where each dictionary contains information about
               a cookie and its security attributes.
     """
     results = []
-    for name, value in cookies.items():
+    for header in set_cookie_headers:
         try:
-            cookie_info = {"name": name, "value": value}
-            
-            # Check for HttpOnly attribute (can't be directly checked, needs browser interaction)
-            cookie_info["HttpOnly"] = "N/A" # Indicate HttpOnly needs manual check
-
-            # Check for Secure attribute
-            cookie_info["Secure"] = "False"
-            if 'secure' in str(cookies).lower():  # Simple check if 'secure' is mentioned (inaccurate)
-                cookie_info["Secure"] = "Potentially True (manual check needed)"  # More accurate would require Selenium or similar
-
-            # Check for SameSite attribute
-            cookie_info["SameSite"] = "N/A"  # Cannot reliably determine SameSite with requests alone
-
+            cookie_info = parse_set_cookie_header(header)
+            if cookie_info is None:
+                continue
             results.append(cookie_info)
-            logging.debug(f"Processed cookie: {name}")
+            logging.debug(f"Processed cookie: {cookie_info['name']}")
 
         except Exception as e:
-            logging.error(f"Error processing cookie {name}: {e}")
+            logging.error(f"Error processing Set-Cookie header: {e}")
 
     return results
     
@@ -75,16 +111,26 @@ def scan_url(url):
               a cookie and its security attributes.  Returns None on error.
     """
     try:
-        response = requests.get(url, allow_redirects=True)
+        response = requests.get(url, allow_redirects=True, timeout=REQUEST_TIMEOUT, stream=True)
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
 
-        cookies = response.cookies.get_dict()
-        if not cookies:
+        # The attributes live in the Set-Cookie headers. Read them from
+        # the raw response headers so each cookie keeps its own header.
+        set_cookie_headers = []
+        raw_headers = getattr(response.raw, "headers", None)
+        if raw_headers is not None and hasattr(raw_headers, "getlist"):
+            set_cookie_headers = raw_headers.getlist("Set-Cookie")
+        if not set_cookie_headers:
+            combined = response.headers.get("Set-Cookie")
+            if combined:
+                set_cookie_headers = [combined]
+
+        if not set_cookie_headers:
             logging.warning(f"No cookies found for URL: {url}")
             return []
 
         logging.info(f"Found cookies for URL: {url}")
-        results = check_cookie_attributes(url, cookies)
+        results = check_cookie_attributes(url, set_cookie_headers)
         return results
 
     except requests.exceptions.RequestException as e:
