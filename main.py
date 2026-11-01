@@ -111,6 +111,9 @@ def scan_url(url):
               a cookie and its security attributes.  Returns None on error.
     """
     try:
+        # Redirects are followed before I ever look at headers, and stream leaves the body unread.
+        # Cookies set by an earlier response in the chain are gone by the time I check, because
+        # only the final response's raw headers are in front of me.
         response = requests.get(url, allow_redirects=True, timeout=REQUEST_TIMEOUT, stream=True)
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
 
@@ -121,6 +124,8 @@ def scan_url(url):
         if raw_headers is not None and hasattr(raw_headers, "getlist"):
             set_cookie_headers = raw_headers.getlist("Set-Cookie")
         if not set_cookie_headers:
+            # This fallback treats one combined header string as one cookie. Several cookies joined
+            # by the client library collapse into a single record here, and the rest go unreported.
             combined = response.headers.get("Set-Cookie")
             if combined:
                 set_cookie_headers = [combined]
@@ -155,6 +160,8 @@ def output_results(results, output_file=None):
             output += f"    Value: {cookie['value']}\n"
             output += f"    HttpOnly: {cookie['HttpOnly']}\n"
             output += f"    Secure: {cookie['Secure']}\n"
+            # Domain, Path, and expiry never reach this report. A cookie scoped to a broad parent
+            # domain and one locked to this host look identical in my output.
             output += f"    SameSite: {cookie['SameSite']}\n"
             output += "---\n"
 
@@ -185,6 +192,8 @@ def main():
 
     if not validate_url(url):
         logging.error(f"Invalid URL: {url}")
+        # Returning here ends the process with a success code. An invalid URL and a failed scan
+        # both exit 0, which a wrapping script will read as a completed check.
         print("Error: Invalid URL. Please provide a valid URL (e.g., https://example.com).")
         return
 
